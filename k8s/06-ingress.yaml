@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wiz-todo-ingress
+  namespace: wiz-app
+  labels:
+    app: wiz-todo-app
+  annotations:
+    # Routes traffic through the nginx ingress controller (backed by AWS NLB)
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: wiz-todo-service
+                port:
+                  number: 80

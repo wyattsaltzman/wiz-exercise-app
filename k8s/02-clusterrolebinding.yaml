@@ -1,0 +1,19 @@
+# INTENTIONAL WEAKNESS (required by exercise):
+# The app service account is granted cluster-admin privileges.
+# In production this is a critical misconfiguration — any pod running as this
+# service account can read secrets, modify workloads, or escalate privileges
+# across the entire cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: wiz-todo-cluster-admin
+  labels:
+    app: wiz-todo-app
+subjects:
+  - kind: ServiceAccount
+    name: wiz-todo-sa
+    namespace: wiz-app
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io

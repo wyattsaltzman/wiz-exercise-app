@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wiz-todo-app
+  namespace: wiz-app
+  labels:
+    app: wiz-todo-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: wiz-todo-app
+  template:
+    metadata:
+      labels:
+        app: wiz-todo-app
+    spec:
+      # INTENTIONAL WEAKNESS: cluster-admin service account (required by exercise)
+      serviceAccountName: wiz-todo-sa
+
+      containers:
+        - name: wiz-todo-app
+          # Image is substituted by CI/CD pipeline (sed or kustomize)
+          image: ECR_REGISTRY/wiz-todo-app:IMAGE_TAG
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+
+          # MongoDB URI injected from Kubernetes secret (environment variable)
+          env:
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: MONGO_URI
+            - name: PORT
+              value: "3000"
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10

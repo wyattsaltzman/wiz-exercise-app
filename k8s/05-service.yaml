@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: wiz-todo-service
+  namespace: wiz-app
+  labels:
+    app: wiz-todo-app
+spec:
+  selector:
+    app: wiz-todo-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+      protocol: TCP
+  type: ClusterIP

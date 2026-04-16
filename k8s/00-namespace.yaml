@@ -1,0 +1,8 @@
+# NOTE: This namespace is created by Terraform (eks.tf).
+# This file is kept for reference and for kubectl demos during the presentation.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wiz-app
+  labels:
+    app.kubernetes.io/managed-by: terraform

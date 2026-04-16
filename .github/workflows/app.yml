@@ -1,0 +1,146 @@
+name: App — Build, Scan & Deploy
+
+on:
+  workflow_dispatch:  # manual trigger only — re-add push/PR triggers once AWS is configured
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: "us-east-1"
+  ECR_REPOSITORY: "wiz-todo-app"
+  K8S_NAMESPACE: "wiz-app"
+  K8S_DEPLOYMENT: "wiz-todo-app"
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Build the container image and scan it with Trivy
+  # -----------------------------------------------------------------------
+  build-and-scan:
+    name: Build & Security Scan
+    runs-on: ubuntu-latest
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+      short_sha: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build Docker image (local tag for scanning)
+        run: |
+          docker build \
+            -t wiz-todo-app:scan \
+            -f Dockerfile .
+
+      # -----------------------------------------------------------------------
+      # Trivy container image scan — security gate before push
+      # HIGH/CRITICAL vulnerabilities are reported; soft-fail so intentional
+      # misconfigs in the base image don't block the demo pipeline.
+      # -----------------------------------------------------------------------
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "wiz-todo-app:scan"
+          format: "table"
+          exit-code: "0"
+          ignore-unfixed: true
+          severity: "CRITICAL,HIGH"
+          output: trivy-results.txt
+
+      - name: Upload Trivy scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-results
+          path: trivy-results.txt
+
+      - name: Print Trivy summary
+        run: cat trivy-results.txt
+
+  # -----------------------------------------------------------------------
+  # Push to ECR and deploy to EKS (main branch only)
+  # -----------------------------------------------------------------------
+  push-and-deploy:
+    name: Push to ECR & Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-and-scan
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image to ECR
+        id: build-push
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f Dockerfile .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Apply Kubernetes manifests
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Substitute the real ECR image into the deployment manifest
+          sed -i "s|ECR_REGISTRY/wiz-todo-app:IMAGE_TAG|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" \
+            k8s/04-deployment.yaml
+
+          # Apply everything except the secret placeholder (Terraform manages it)
+          kubectl apply -f k8s/01-serviceaccount.yaml
+          kubectl apply -f k8s/02-clusterrolebinding.yaml
+          kubectl apply -f k8s/04-deployment.yaml
+          kubectl apply -f k8s/05-service.yaml
+          kubectl apply -f k8s/06-ingress.yaml
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --timeout=300s
+
+      - name: Verify wizexercise.txt in running container
+        run: |
+          POD=$(kubectl get pods -n ${{ env.K8S_NAMESPACE }} \
+            -l app=wiz-todo-app \
+            -o jsonpath='{.items[0].metadata.name}')
+          echo "Checking wizexercise.txt in pod: $POD"
+          kubectl exec -n ${{ env.K8S_NAMESPACE }} "$POD" -- cat /app/wizexercise.txt
+
+      - name: Show deployment status
+        run: |
+          kubectl get all -n ${{ env.K8S_NAMESPACE }}
+          echo ""
+          echo "Ingress:"
+          kubectl get ingress -n ${{ env.K8S_NAMESPACE }}
