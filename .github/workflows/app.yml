@@ -54,7 +54,7 @@ jobs:
         with:
           image-ref: "wiz-todo-app:scan"
           format: "table"
-          exit-code: "0"
+          exit-code: "1"
           ignore-unfixed: true
           severity: "CRITICAL,HIGH"
           output: trivy-results.txt
